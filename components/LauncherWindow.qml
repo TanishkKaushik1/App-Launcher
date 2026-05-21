@@ -12,6 +12,13 @@ Item {
     property var    topApps:          []
     property var    visualizerData:   new Array(32).fill(0)
     property string searchQuery:      ""
+    property real   cpuUsage:         0.0
+    property real   ramUsage:         0.0
+    property real   diskUsage:        0.0
+    property real   netRxKbps:        0.0
+    property real   netTxKbps:        0.0
+    property string uptimeStr:        ""
+    property string dateStr:          ""
     property color  surface:          "#10140f"
     property color  fgColor:          "#e0e4db"
     property color  primary:          "#9fd49b"
@@ -63,6 +70,13 @@ Item {
                             Layout.fillHeight:     true
                             topApps:          launcherItem.topApps
                             visualizerData:   launcherItem.visualizerData
+                            cpuUsage:         launcherItem.cpuUsage
+                            ramUsage:         launcherItem.ramUsage
+                            diskUsage:        launcherItem.diskUsage
+                            netRxKbps:        launcherItem.netRxKbps
+                            netTxKbps:        launcherItem.netTxKbps
+                            uptimeStr:        launcherItem.uptimeStr
+                            dateStr:          launcherItem.dateStr
                             surface:          launcherItem.surface
                             fgColor:          launcherItem.fgColor
                             primary:          launcherItem.primary

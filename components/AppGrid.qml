@@ -21,7 +21,7 @@ Rectangle {
     signal closeRequested()
 
     color: Qt.rgba(surface.r, surface.g, surface.b, 0.75)
-    radius: 22
+    
 
     // Flat left edge to join SidePanel
     layer.enabled: true

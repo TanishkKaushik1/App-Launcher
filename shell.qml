@@ -16,6 +16,15 @@ ShellRoot {
     property int    appsRevision:   0
     property var    visualizerData: new Array(32).fill(0)
 
+    // ── System stats ──────────────────────────────────────────────────────────
+    property real   cpuUsage:       0.0   // 0.0–1.0
+    property real   ramUsage:       0.0   // 0.0–1.0
+    property real   diskUsage:      0.0   // 0.0–1.0  (root filesystem)
+    property real   netRxKbps:      0.0   // KB/s receive
+    property real   netTxKbps:      0.0   // KB/s transmit
+    property string uptimeStr:      ""
+    property string dateStr:        ""
+
     property color  surface:          "#10140f"
     property color  fgColor:          "#e0e4db"
     property color  primary:          "#9fd49b"
@@ -24,7 +33,7 @@ ShellRoot {
     property color  tertiary:         "#a1ced5"
     property string activeFont:       "Inter Nerd Font"
 
-    // ── Matugen ──────────────────────────────────────────────────────────────
+    // ── Matugen ───────────────────────────────────────────────────────────────
     Process {
         id: matugenProc
         command: ["sh", "-c", "jq -c . /home/tanishk/.config/niri-rice/matugen/colors.json 2>/dev/null || echo '{}'"]
@@ -57,7 +66,7 @@ ShellRoot {
         onTriggered: { matugenProc.running = false; matugenProc.running = true }
     }
 
-    // ── Visualizer ───────────────────────────────────────────────────────────
+    // ── Visualizer ────────────────────────────────────────────────────────────
     Process {
         id: vizProc
         command: ["/home/tanishk/.config/niri-rice/qs-visualizer/target/release/qs-visualizer"]
@@ -72,7 +81,122 @@ ShellRoot {
         }
     }
 
-    // ── App list — StdioCollector waits for full output ───────────────────────
+    // ── CPU stat poller ───────────────────────────────────────────────────────
+    property real _cpuPrevIdle:  0
+    property real _cpuPrevTotal: 0
+
+    Process {
+        id: cpuProc
+        command: ["sh", "-c", "awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8}' /proc/stat"]
+        running: false
+        stdout: SplitParser {
+            onRead: data => {
+                try {
+                    let f = data.trim().split(" ").map(Number)
+                    let idle  = f[3] + f[4]
+                    let total = f[0]+f[1]+f[2]+f[3]+f[4]+f[5]+f[6]
+                    let dIdle  = idle  - root._cpuPrevIdle
+                    let dTotal = total - root._cpuPrevTotal
+                    if (dTotal > 0)
+                        root.cpuUsage = Math.max(0, Math.min(1, 1 - dIdle/dTotal))
+                    root._cpuPrevIdle  = idle
+                    root._cpuPrevTotal = total
+                } catch(e) {}
+            }
+        }
+    }
+
+    // ── RAM stat poller ───────────────────────────────────────────────────────
+    Process {
+        id: ramProc
+        command: ["sh", "-c", "awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print t,a}' /proc/meminfo"]
+        running: false
+        stdout: SplitParser {
+            onRead: data => {
+                try {
+                    let f = data.trim().split(" ").map(Number)
+                    if (f[0] > 0) root.ramUsage = Math.max(0, Math.min(1, (f[0]-f[1])/f[0]))
+                } catch(e) {}
+            }
+        }
+    }
+
+    // ── Disk usage poller (root filesystem) ───────────────────────────────────
+    Process {
+        id: diskProc
+        // df gives Use% as integer 0-100
+        command: ["sh", "-c", "df / | awk 'NR==2{gsub(/%/,\"\",$5); print $5}'"]
+        running: false
+        stdout: SplitParser {
+            onRead: data => {
+                try {
+                    let v = parseInt(data.trim())
+                    if (!isNaN(v)) root.diskUsage = Math.max(0, Math.min(1, v/100))
+                } catch(e) {}
+            }
+        }
+    }
+
+    // ── Network poller ────────────────────────────────────────────────────────
+    // Reads /proc/net/dev twice 1s apart, computes KB/s delta
+    property real _netPrevRx: 0
+    property real _netPrevTx: 0
+
+    Process {
+        id: netProc
+        // Sum all non-lo interfaces rx (col2) and tx (col10)
+        command: ["sh", "-c",
+            "awk '/^ *(eth|en|wl|wlan|wlp|eno|enp)/{rx+=$2;tx+=$10}END{print rx,tx}' /proc/net/dev"]
+        running: false
+        stdout: SplitParser {
+            onRead: data => {
+                try {
+                    let f = data.trim().split(" ").map(Number)
+                    let rx = f[0], tx = f[1]
+                    if (root._netPrevRx > 0) {
+                        // divide by 1024 for KB, divide by poll interval (2s)
+                        root.netRxKbps = Math.max(0, (rx - root._netPrevRx) / 1024 / 2)
+                        root.netTxKbps = Math.max(0, (tx - root._netPrevTx) / 1024 / 2)
+                    }
+                    root._netPrevRx = rx
+                    root._netPrevTx = tx
+                } catch(e) {}
+            }
+        }
+    }
+
+    // ── Uptime + date poller ──────────────────────────────────────────────────
+    Process {
+        id: uptimeProc
+        command: ["sh", "-c", "uptime -p | sed 's/up //' && date '+%a, %d %b'"]
+        running: false
+        property string buf: ""
+        stdout: SplitParser {
+            onRead: data => { uptimeProc.buf += data + "\n" }
+        }
+        onRunningChanged: {
+            if (!running && buf !== "") {
+                let lines = buf.trim().split("\n")
+                root.uptimeStr = lines[0] || ""
+                root.dateStr   = lines[1] || ""
+                buf = ""
+            }
+        }
+    }
+
+    // ── Single timer fires all pollers every 2 s ──────────────────────────────
+    Timer {
+        interval: 2000; running: true; repeat: true; triggeredOnStart: true
+        onTriggered: {
+            cpuProc.running    = false; cpuProc.running    = true
+            ramProc.running    = false; ramProc.running    = true
+            diskProc.running   = false; diskProc.running   = true
+            netProc.running    = false; netProc.running    = true
+            uptimeProc.running = false; uptimeProc.running = true
+        }
+    }
+
+    // ── App list ──────────────────────────────────────────────────────────────
     property string listBuffer: ""
 
     Process {
@@ -80,27 +204,19 @@ ShellRoot {
         command: ["/home/tanishk/.config/niri-rice/app-launcher/list-apps.sh"]
         running: false
         stdout: SplitParser {
-            onRead: data => {
-                root.listBuffer += data
-            }
+            onRead: data => { root.listBuffer += data }
         }
         onRunningChanged: {
             if (!running && root.listBuffer !== "") {
-                console.log("listProc done, buffer length:", root.listBuffer.length)
                 try {
                     let apps = JSON.parse(root.listBuffer.trim())
                     if (Array.isArray(apps) && apps.length > 0) {
-                        console.log("Loaded", apps.length, "apps")
                         root.allApps = apps
                         root.applyFilter()
                         topProc.running = false
                         topProc.running = true
-                    } else {
-                        console.log("bad response:", root.listBuffer.substring(0, 100))
                     }
-                } catch(e) {
-                    console.log("parse error:", e, root.listBuffer.substring(0, 100))
-                }
+                } catch(e) {}
                 root.listBuffer = ""
             }
         }
@@ -143,20 +259,13 @@ ShellRoot {
 
     function open() {
         root.shown = true
-        console.log('open() called, starting listProc')
         listProc.running = false
         openTimer.start()
     }
 
     Timer {
-        id: openTimer
-        interval: 50
-        repeat: false
-        onTriggered: {
-            console.log('openTimer fired, listProc.running =', listProc.running)
-            listProc.running = true
-            console.log('listProc.running set to true')
-        }
+        id: openTimer; interval: 50; repeat: false
+        onTriggered: { listProc.running = true }
     }
 
     function close() {
@@ -179,7 +288,6 @@ ShellRoot {
         }
         root.filteredApps = apps
         root.appsRevision += 1
-        console.log("applyFilter: set", apps.length, "apps, revision:", root.appsRevision)
     }
 
     function launch(app) {
@@ -216,6 +324,13 @@ ShellRoot {
         topApps:          root.topApps
         visualizerData:   root.visualizerData
         searchQuery:      root.searchQuery
+        cpuUsage:         root.cpuUsage
+        ramUsage:         root.ramUsage
+        diskUsage:        root.diskUsage
+        netRxKbps:        root.netRxKbps
+        netTxKbps:        root.netTxKbps
+        uptimeStr:        root.uptimeStr
+        dateStr:          root.dateStr
         surface:          root.surface
         fgColor:          root.fgColor
         primary:          root.primary
